@@ -25,7 +25,7 @@ def calculate_coulomb_force_between(particle1: Particle,
                                     particle2: Particle) -> np.ndarray:
     """
     Calculate electrostatic force between two charged particles.
-    Uses a minimum distance cutoff to avoid singularity at r=0.
+    Uses soft-core regularization to avoid singularity at r=0.
     """
     # Calculate displacement vector from particle2 to particle1
     displacement = particle1.position - particle2.position
@@ -33,35 +33,29 @@ def calculate_coulomb_force_between(particle1: Particle,
     # Calculate distance between particles
     distance = np.linalg.norm(displacement)
 
-    # Handle very close particles with stronger regularization
-    min_distance = 1e-3  # Increased from 1e-6 for stronger regularization
-
+    # For exactly overlapping particles, return zero force
     if distance < const.EPSILON:
-        # For exactly overlapping particles, add small random force to break symmetry
-        # This prevents particles from being stuck together
-        np.random.seed(int(particle1.particle_id + particle2.particle_id))
-        random_angle = np.random.uniform(0, 2 * np.pi)
-        small_force = 0.1  # Small force to separate particles
-        return np.array([small_force * np.cos(random_angle),
-                        small_force * np.sin(random_angle)])
-    elif distance < min_distance:
-        # For very close but not overlapping, use minimum distance
-        distance = min_distance
-        r_hat = displacement / np.linalg.norm(displacement)
+        return np.array([0.0, 0.0])
+
+    # Soft-core regularization for very close particles
+    # Use smaller regularization distance
+    min_distance = 1e-6
+    if distance < min_distance:
+        # Use soft-core potential: F = q1*q2*r/(r^2 + eps^2)^(3/2)
+        eps = min_distance
+        r_squared = distance * distance
+        denominator = (r_squared + eps * eps) ** 1.5
+        force_magnitude = (particle1.charge * particle2.charge * distance) / denominator
+        if distance > 0:
+            r_hat = displacement / distance
+        else:
+            return np.array([0.0, 0.0])
     else:
-        # Normal case: calculate unit vector
+        # Normal Coulomb force
         r_hat = displacement / distance
+        force_magnitude = (particle1.charge * particle2.charge) / (distance ** 2)
 
-    # Calculate force magnitude with optional capping for numerical stability
-    # F = q1 * q2 / r^2
-    force_magnitude = (particle1.charge * particle2.charge) / (distance ** 2)
-
-    # Cap force magnitude to prevent numerical issues
-    max_force = 1e9  # Reasonable maximum force
-    if force_magnitude > max_force:
-        force_magnitude = max_force
-
-    # Force vector points in direction of displacement (repulsive)
+    # Force vector points in direction of displacement (repulsive for same-sign charges)
     force = force_magnitude * r_hat
 
     return force
@@ -112,7 +106,8 @@ def calculate_acceleration(particle_index: int,
     if abs(particle.mass) < const.EPSILON:
         return np.array([0.0, 0.0])
 
-    # Divide force by mass for acceleration
+    # Newton's second law: a = F/m
+    # For negative mass, acceleration is in opposite direction to force
     acceleration = total_force / particle.mass
     return acceleration
 
@@ -131,18 +126,16 @@ def calculate_potential_energy_coulomb(particles: List[Particle]) -> float:
             distance = particles[i].distance_to(particles[j])
 
             # Use same regularization as force calculation
-            min_distance = 1e-3  # Match the force calculation
+            min_distance = 1e-6
             if distance < min_distance:
-                distance = min_distance
-
-            # Add pairwise potential energy
-            # U_ij = q_i * q_j / r_ij
-            pair_potential = (particles[i].charge * particles[j].charge) / distance
-
-            # Cap potential to prevent numerical issues
-            max_potential = 1e9
-            if pair_potential > max_potential:
-                pair_potential = max_potential
+                # Soft-core potential: U = q1*q2/sqrt(r^2 + eps^2)
+                eps = min_distance
+                r_squared = distance * distance
+                effective_distance = np.sqrt(r_squared + eps * eps)
+                pair_potential = (particles[i].charge * particles[j].charge) / effective_distance
+            else:
+                # Normal Coulomb potential
+                pair_potential = (particles[i].charge * particles[j].charge) / distance
 
             total_potential += pair_potential
 
@@ -152,9 +145,6 @@ def calculate_potential_energy_coulomb(particles: List[Particle]) -> float:
 def calculate_system_forces(particles: List[Particle]) -> List[np.ndarray]:
     """
     Calculate forces on all particles in the system.
-
-    This function calculates forces for all particles simultaneously,
-    which is needed for the batch update approach in RK4 integration.
     """
     forces = []
 
@@ -168,9 +158,6 @@ def calculate_system_forces(particles: List[Particle]) -> List[np.ndarray]:
 def calculate_system_forces_symmetric(particles: List[Particle]) -> List[np.ndarray]:
     """
     Calculate forces on all particles ensuring Newton's 3rd law exactly.
-
-    This version calculates each pair only once and applies equal and
-    opposite forces, guaranteeing exact conservation of momentum.
     """
     n_particles = len(particles)
     forces = [np.array([0.0, 0.0]) for _ in range(n_particles)]
@@ -195,7 +182,6 @@ def calculate_system_forces_symmetric(particles: List[Particle]) -> List[np.ndar
 def calculate_system_accelerations(particles: List[Particle]) -> List[np.ndarray]:
     """
     Calculate accelerations for all particles in the system.
-    Uses symmetric force calculation for exact momentum conservation.
     """
     forces = calculate_system_forces_symmetric(particles)
     accelerations = []
@@ -204,6 +190,7 @@ def calculate_system_accelerations(particles: List[Particle]) -> List[np.ndarray
         if abs(particle.mass) < const.EPSILON:
             accelerations.append(np.array([0.0, 0.0]))
         else:
+            # Newton's second law: a = F/m
             accelerations.append(forces[i] / particle.mass)
 
     return accelerations
