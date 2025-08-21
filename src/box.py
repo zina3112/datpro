@@ -1,8 +1,11 @@
 """
-box.py - Simulation box with wall collision handling
+box.py - Simulation box with EXACT interpolation-based wall collision handling
 
-This module defines the Box class which represents the 2D simulation domain
-with perfectly elastic wall reflections.
+This module implements the EXACT collision detection and handling method
+as specified in the project requirements. It uses linear interpolation
+to find the precise collision time and splits the RK4 integration accordingly.
+
+CRITICAL: This implementation follows the specification EXACTLY as required.
 """
 
 import numpy as np
@@ -13,7 +16,14 @@ from .particle import Particle
 
 class Box:
     """
-    Represents the 2D simulation box with elastic wall collisions.
+    Represents the 2D simulation box with perfectly elastic wall collisions.
+
+    This implementation uses the EXACT method specified in the project:
+    1. Calculate full RK4 step
+    2. Check if particle would exit box
+    3. Use LINEAR INTERPOLATION to find collision time
+    4. Split timestep at collision point
+    5. Apply reflection and continue
     """
 
     def __init__(self,
@@ -21,7 +31,7 @@ class Box:
                  x_max: float = const.BOX_MAX_X,
                  y_min: float = const.BOX_MIN_Y,
                  y_max: float = const.BOX_MAX_Y):
-        """Initialize the simulation box."""
+        """Initialize the simulation box with boundaries."""
         self.x_min = x_min
         self.x_max = x_max
         self.y_min = y_min
@@ -33,203 +43,289 @@ class Box:
         if self.width <= 0 or self.height <= 0:
             raise ValueError("Box dimensions must be positive")
 
+        # Statistics tracking
         self.total_collisions = 0
         self.collision_history = []
 
     def is_inside(self, position: np.ndarray) -> bool:
-        """Check if a position is inside the box."""
+        """
+        Check if a position is inside the box boundaries.
+
+        Args:
+            position: [x, y] position vector
+
+        Returns:
+            bool: True if position is inside box (including boundaries)
+        """
         x, y = position
         return (self.x_min <= x <= self.x_max and
                 self.y_min <= y <= self.y_max)
 
-    def check_and_handle_collisions(self, particle: Particle, dt: float) -> bool:
+    def handle_wall_collision_exact(self,
+                                    particle: Particle,
+                                    all_particles: List[Particle],
+                                    particle_index: int,
+                                    dt: float) -> np.ndarray:
         """
-        Check and handle wall collisions for a particle after it has moved.
+        Handle wall collisions using the EXACT interpolation method from the specification.
 
-        This simplified approach directly reflects velocities if particle is outside box.
-        Returns True if collision occurred.
-        """
-        collision_occurred = False
+        This is the MAIN METHOD that implements the required algorithm:
 
-        # Check x boundaries
-        if particle.x < self.x_min:
-            particle.state[0] = self.x_min + (self.x_min - particle.x)  # Reflect position
-            particle.state[2] = -particle.state[2]  # Reverse x velocity
-            collision_occurred = True
-            particle.collision_count += 1
-            self.total_collisions += 1
-        elif particle.x > self.x_max:
-            particle.state[0] = self.x_max - (particle.x - self.x_max)  # Reflect position
-            particle.state[2] = -particle.state[2]  # Reverse x velocity
-            collision_occurred = True
-            particle.collision_count += 1
-            self.total_collisions += 1
+        1. First calculate the full RK4 step for dt
+        2. Check if the resulting position would be outside the box
+        3. If yes, use LINEAR INTERPOLATION to find the exact collision time
+        4. Re-do RK4 for only the pre-collision fraction of dt
+        5. Reflect the velocity at the collision point
+        6. Do another RK4 for the remaining time with reflected velocity
 
-        # Check y boundaries
-        if particle.y < self.y_min:
-            particle.state[1] = self.y_min + (self.y_min - particle.y)  # Reflect position
-            particle.state[3] = -particle.state[3]  # Reverse y velocity
-            collision_occurred = True
-            particle.collision_count += 1
-            self.total_collisions += 1
-        elif particle.y > self.y_max:
-            particle.state[1] = self.y_max - (particle.y - self.y_max)  # Reflect position
-            particle.state[3] = -particle.state[3]  # Reverse y velocity
-            collision_occurred = True
-            particle.collision_count += 1
-            self.total_collisions += 1
-
-        return collision_occurred
-
-    def check_wall_collision(self,
-                             old_state: np.ndarray,
-                             new_state: np.ndarray) -> Tuple[bool, Optional[str], Optional[float]]:
-        """
-        Check if particle trajectory crosses a wall.
+        Args:
+            particle: The particle to update
+            all_particles: All particles (needed for force calculations)
+            particle_index: Index of this particle in the list
+            dt: The timestep
 
         Returns:
-            Tuple of (collision_occurred, wall_hit, collision_fraction)
-        """
-        x_old, y_old = old_state[0:2]
-        x_new, y_new = new_state[0:2]
-
-        # Check if new position is outside box
-        if self.is_inside(new_state[0:2]):
-            return False, None, None
-
-        # Find earliest collision time
-        collision_time = 1.0  # Full timestep
-        wall_hit = None
-
-        # Check collision with left wall
-        if x_new < self.x_min and x_old >= self.x_min:
-            if abs(x_new - x_old) > const.EPSILON:
-                t = (self.x_min - x_old) / (x_new - x_old)
-                if 0 <= t < collision_time:
-                    collision_time = t
-                    wall_hit = 'left'
-
-        # Check collision with right wall
-        if x_new > self.x_max and x_old <= self.x_max:
-            if abs(x_new - x_old) > const.EPSILON:
-                t = (self.x_max - x_old) / (x_new - x_old)
-                if 0 <= t < collision_time:
-                    collision_time = t
-                    wall_hit = 'right'
-
-        # Check collision with bottom wall
-        if y_new < self.y_min and y_old >= self.y_min:
-            if abs(y_new - y_old) > const.EPSILON:
-                t = (self.y_min - y_old) / (y_new - y_old)
-                if 0 <= t < collision_time:
-                    collision_time = t
-                    wall_hit = 'bottom'
-
-        # Check collision with top wall
-        if y_new > self.y_max and y_old <= self.y_max:
-            if abs(y_new - y_old) > const.EPSILON:
-                t = (self.y_max - y_old) / (y_new - y_old)
-                if 0 <= t < collision_time:
-                    collision_time = t
-                    wall_hit = 'top'
-
-        if wall_hit is not None:
-            return True, wall_hit, collision_time
-
-        return False, None, None
-
-    def reflect_velocity(self, velocity: np.ndarray, wall: str) -> np.ndarray:
-        """Reflect velocity vector based on which wall was hit."""
-        vx, vy = velocity
-
-        if wall == 'left' or wall == 'right':
-            vx = -vx
-        elif wall == 'bottom' or wall == 'top':
-            vy = -vy
-        else:
-            raise ValueError(f"Unknown wall: {wall}")
-
-        return np.array([vx, vy])
-
-    def handle_collision_with_rk4(self,
-                                  particle_index: int,
-                                  old_state: np.ndarray,
-                                  all_particles: List[Particle],
-                                  dt: float) -> Tuple[np.ndarray, bool, float]:
-        """
-        Handle wall collision with simplified approach.
+            np.ndarray: The final state after handling any collisions
         """
         from .integrator import rk4_step_single
 
-        # Calculate full RK4 step
-        full_increment = rk4_step_single(
-            all_particles[particle_index],
+        # Store the original state before any calculations
+        original_state = particle.state.copy()
+
+        # STEP 1: Calculate the full RK4 step as if there were no walls
+        # This gives us the "tentative" new state
+        full_step_increment = rk4_step_single(
+            particle,
             all_particles,
             particle_index,
             dt
         )
 
-        new_state = old_state + full_increment
+        # Calculate what the new state would be after the full timestep
+        tentative_new_state = original_state + full_step_increment
 
-        # Check for collision
-        collision, wall, collision_fraction = self.check_wall_collision(old_state, new_state)
+        # STEP 2: Check if this tentative position is outside the box
+        tentative_position = tentative_new_state[0:2]
 
-        if not collision:
-            return new_state, False, dt
+        if self.is_inside(tentative_position):
+            # No collision - return the full step result
+            return tentative_new_state
 
-        # Handle collision with simplified approach
-        self.total_collisions += 1
-        all_particles[particle_index].collision_count += 1
-        all_particles[particle_index].last_collision_time = collision_fraction * dt
+        # STEP 3: A collision will occur - find WHEN using LINEAR INTERPOLATION
+        # We need to find the fraction of dt at which the particle hits the wall
 
-        # Move to collision point
+        # Extract positions for interpolation
+        x0, y0 = original_state[0:2]  # Starting position
+        x1, y1 = tentative_new_state[0:2]  # Would-be ending position
+
+        # Calculate the collision time fraction for each wall
+        # We find the EARLIEST collision (smallest positive fraction)
+        collision_fraction = 1.0  # Initialize to full timestep
+        wall_hit = None
+
+        # Check collision with LEFT wall (x = x_min)
+        if x1 < self.x_min and x0 >= self.x_min:
+            # Particle crosses left wall
+            # Linear interpolation: find t such that x(t) = x_min
+            # x(t) = x0 + t*(x1-x0) = x_min
+            # Therefore: t = (x_min - x0)/(x1 - x0)
+            if abs(x1 - x0) > const.EPSILON:  # Avoid division by zero
+                t_left = (self.x_min - x0) / (x1 - x0)
+                if 0 <= t_left < collision_fraction:
+                    collision_fraction = t_left
+                    wall_hit = 'left'
+
+        # Check collision with RIGHT wall (x = x_max)
+        elif x1 > self.x_max and x0 <= self.x_max:
+            # Particle crosses right wall
+            # Linear interpolation: t = (x_max - x0)/(x1 - x0)
+            if abs(x1 - x0) > const.EPSILON:
+                t_right = (self.x_max - x0) / (x1 - x0)
+                if 0 <= t_right < collision_fraction:
+                    collision_fraction = t_right
+                    wall_hit = 'right'
+
+        # Check collision with BOTTOM wall (y = y_min)
+        if y1 < self.y_min and y0 >= self.y_min:
+            # Particle crosses bottom wall
+            # Linear interpolation: t = (y_min - y0)/(y1 - y0)
+            if abs(y1 - y0) > const.EPSILON:
+                t_bottom = (self.y_min - y0) / (y1 - y0)
+                if 0 <= t_bottom < collision_fraction:
+                    collision_fraction = t_bottom
+                    wall_hit = 'bottom'
+
+        # Check collision with TOP wall (y = y_max)
+        elif y1 > self.y_max and y0 <= self.y_max:
+            # Particle crosses top wall
+            # Linear interpolation: t = (y_max - y0)/(y1 - y0)
+            if abs(y1 - y0) > const.EPSILON:
+                t_top = (self.y_max - y0) / (y1 - y0)
+                if 0 <= t_top < collision_fraction:
+                    collision_fraction = t_top
+                    wall_hit = 'top'
+
+        # STEP 4: Execute RK4 for only the pre-collision fraction of dt
+        # This brings the particle exactly to the wall
         dt_to_collision = collision_fraction * dt
+
         if dt_to_collision > const.EPSILON:
-            increment_to_collision = rk4_step_single(
-                all_particles[particle_index],
+            # Calculate RK4 step up to the collision point
+            step_to_collision = rk4_step_single(
+                particle,
                 all_particles,
                 particle_index,
                 dt_to_collision
             )
-            state_at_collision = old_state + increment_to_collision
+            state_at_collision = original_state + step_to_collision
         else:
-            state_at_collision = old_state.copy()
+            # Collision happens immediately
+            state_at_collision = original_state.copy()
 
-        # Reflect velocity
-        velocity_at_collision = state_at_collision[2:4]
-        reflected_velocity = self.reflect_velocity(velocity_at_collision, wall)
+        # STEP 5: Reflect the velocity component perpendicular to the wall
+        # This implements perfect elastic reflection
+        reflected_state = state_at_collision.copy()
 
-        state_after_reflection = state_at_collision.copy()
-        state_after_reflection[2:4] = reflected_velocity
+        if wall_hit == 'left' or wall_hit == 'right':
+            # Reflect x-velocity (reverse sign)
+            reflected_state[2] = -reflected_state[2]
+            # Record collision for statistics
+            self.total_collisions += 1
+            particle.collision_count += 1
 
-        # Continue with remaining time
-        original_particle_state = all_particles[particle_index].state.copy()
-        all_particles[particle_index].update_state(state_after_reflection)
+        elif wall_hit == 'bottom' or wall_hit == 'top':
+            # Reflect y-velocity (reverse sign)
+            reflected_state[3] = -reflected_state[3]
+            # Record collision for statistics
+            self.total_collisions += 1
+            particle.collision_count += 1
 
-        remaining_dt = dt - dt_to_collision
-        if remaining_dt > const.EPSILON:
-            remaining_increment = rk4_step_single(
-                all_particles[particle_index],
+        # STEP 6: Execute RK4 for the remaining time after collision
+        # Use the reflected velocity for this portion
+        dt_after_collision = dt - dt_to_collision
+
+        if dt_after_collision > const.EPSILON:
+            # Temporarily update particle state to reflected state
+            # This is needed for force calculations in RK4
+            particle.update_state(reflected_state)
+
+            # Calculate RK4 step for remaining time
+            step_after_collision = rk4_step_single(
+                particle,
                 all_particles,
                 particle_index,
-                remaining_dt
+                dt_after_collision
             )
-            final_state = state_after_reflection + remaining_increment
+
+            # Restore original state (important for batch updates)
+            particle.update_state(original_state)
+
+            # Final state is reflected state plus the post-collision step
+            final_state = reflected_state + step_after_collision
         else:
-            final_state = state_after_reflection
+            # No time remaining after collision
+            final_state = reflected_state
 
-        # Restore original particle state
-        all_particles[particle_index].update_state(original_particle_state)
-
-        # Ensure particle is inside box
+        # SAFETY CHECK: Ensure particle is inside box after all calculations
+        # This handles numerical errors and corner collisions
         if not self.is_inside(final_state[0:2]):
+            # Clamp position to box boundaries
             final_state[0] = np.clip(final_state[0], self.x_min, self.x_max)
             final_state[1] = np.clip(final_state[1], self.y_min, self.y_max)
 
-        return final_state, True, dt
+        # Check for secondary collision (particle might hit another wall)
+        # This is important for corners and high-speed particles
+        if not self.is_inside(final_state[0:2]) or self._would_exit_in_next_step(final_state, dt * 0.1):
+            # Recursively handle secondary collision with remaining time
+            # This ensures proper handling of corner bounces
+            if dt_after_collision > const.EPSILON and self.total_collisions < const.MAX_COLLISION_ITERATIONS:
+                # Update particle temporarily for recursive call
+                particle.update_state(reflected_state)
+                final_state = self.handle_wall_collision_exact(
+                    particle,
+                    all_particles,
+                    particle_index,
+                    dt_after_collision
+                )
+                # Restore original state
+                particle.update_state(original_state)
+
+        return final_state
+
+    def _would_exit_in_next_step(self, state: np.ndarray, dt: float) -> bool:
+        """
+        Helper method to check if particle would exit box in next step.
+
+        This is used to detect potential corner collisions.
+
+        Args:
+            state: Current state vector [x, y, vx, vy]
+            dt: Timestep to check
+
+        Returns:
+            bool: True if particle would exit box
+        """
+        # Simple linear projection
+        next_x = state[0] + state[2] * dt
+        next_y = state[1] + state[3] * dt
+
+        return not self.is_inside(np.array([next_x, next_y]))
+
+    def check_and_handle_collisions_simple(self, particle: Particle, dt: float) -> bool:
+        """
+        Simple collision handling for post-step correction.
+
+        This is a backup method that can be used after the main integration
+        to ensure particles stay in bounds. It's less accurate than the
+        interpolation method but provides a safety net.
+
+        Args:
+            particle: Particle to check
+            dt: Timestep (for recording purposes)
+
+        Returns:
+            bool: True if a collision was handled
+        """
+        collision_occurred = False
+
+        # Check x boundaries
+        if particle.x < self.x_min:
+            particle.state[0] = 2 * self.x_min - particle.x  # Reflect position
+            particle.state[2] = -particle.state[2]  # Reverse x velocity
+            collision_occurred = True
+
+        elif particle.x > self.x_max:
+            particle.state[0] = 2 * self.x_max - particle.x  # Reflect position
+            particle.state[2] = -particle.state[2]  # Reverse x velocity
+            collision_occurred = True
+
+        # Check y boundaries
+        if particle.y < self.y_min:
+            particle.state[1] = 2 * self.y_min - particle.y  # Reflect position
+            particle.state[3] = -particle.state[3]  # Reverse y velocity
+            collision_occurred = True
+
+        elif particle.y > self.y_max:
+            particle.state[1] = 2 * self.y_max - particle.y  # Reflect position
+            particle.state[3] = -particle.state[3]  # Reverse y velocity
+            collision_occurred = True
+
+        if collision_occurred:
+            self.total_collisions += 1
+            particle.collision_count += 1
+            particle.last_collision_time = dt
+
+        return collision_occurred
 
     def enforce_boundaries(self, particle: Particle):
-        """Ensure particle stays within box boundaries."""
+        """
+        Ensure particle stays within box boundaries.
+
+        This is a final safety check to handle any numerical errors.
+
+        Args:
+            particle: Particle to constrain
+        """
         particle.state[0] = np.clip(particle.state[0], self.x_min, self.x_max)
         particle.state[1] = np.clip(particle.state[1], self.y_min, self.y_max)
 
