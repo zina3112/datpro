@@ -1,0 +1,12 @@
+SIMULATIONSSTATISTIKEN
+==================================================
+
+anfangsenergie: 6658.979402567521
+endenergie: 6658.978319304348
+mittlere_energie: 6658.978847038818
+std_energie: 0.000799153661741469
+max_energie: 6658.980037681181
+min_energie: 6658.9773823672485
+energie_drift: -0.0010832631733137532
+relative_drift: -1.6267705722232396e-07
+anzahl_zeitschritte: 10001
